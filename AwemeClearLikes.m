@@ -53,7 +53,7 @@
 - (UIViewController *)topViewController {
     UIWindow *keyWindow = [self fetchActiveKeyWindow];
     UIViewController *topVC = keyWindow.rootViewController;
-    while (topVC.presentedViewController) {
+    while (topVC && topVC.presentedViewController) {
         topVC = topVC.presentedViewController;
     }
     if ([topVC isKindOfClass:[UINavigationController class]]) {
@@ -95,18 +95,19 @@
     });
 }
 
-// 深度查找数据源
 - (id)findDataControllerFromVC:(UIViewController *)vc {
     if (!vc) return nil;
     
-    // 1. 检查当前 VC 自身
-    id targetObj = [self searchDataControllerInObject:vc];
-    if (targetObj) return targetObj;
-    
-    // 2. 深度遍历 childViewControllers 容器
-    for (UIViewController *child in vc.childViewControllers) {
-        id childTarget = [self findDataControllerFromVC:child];
-        if (childTarget) return childTarget;
+    @try {
+        id targetObj = [self searchDataControllerInObject:vc];
+        if (targetObj) return targetObj;
+        
+        for (UIViewController *child in [vc.childViewControllers copy]) {
+            id childTarget = [self findDataControllerFromVC:child];
+            if (childTarget) return childTarget;
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"[AwemeClear] 遍历 VC 异常: %@", exception);
     }
     
     return nil;
@@ -124,17 +125,25 @@
         
         if ([name containsString:@"Data"] || [name containsString:@"Controller"] || 
             [name containsString:@"Model"] || [name containsString:@"List"] || [name containsString:@"Provider"]) {
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            id propObj = [obj performSelector:NSSelectorFromString(name)];
-            #pragma clang diagnostic pop
             
-            if (propObj) {
-                if ([propObj respondsToSelector:NSSelectorFromString(@"changeVideoDiggedStatus:videoID:")] ||
-                    [propObj respondsToSelector:NSSelectorFromString(@"loadMoreWithFilteredCompletion:")]) {
-                    free(properties);
-                    return propObj;
+            @try {
+                SEL getter = NSSelectorFromString(name);
+                if ([obj respondsToSelector:getter]) {
+                    #pragma clang diagnostic push
+                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                    id propObj = [obj performSelector:getter];
+                    #pragma clang diagnostic pop
+                    
+                    if (propObj) {
+                        if ([propObj respondsToSelector:NSSelectorFromString(@"changeVideoDiggedStatus:videoID:")] ||
+                            [propObj respondsToSelector:NSSelectorFromString(@"loadMoreWithFilteredCompletion:")]) {
+                            free(properties);
+                            return propObj;
+                        }
+                    }
                 }
+            } @catch (NSException *ex) {
+                // 忽略非法 Getter 异常
             }
         }
     }
@@ -143,43 +152,47 @@
 }
 
 - (void)buttonClicked {
-    if ([AwemeLikeCleaner sharedCleaner].isRunning) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"提示" message:@"任务正在后台清理中，要停止吗？" preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"继续清理" style:UIAlertActionStyleCancel handler:nil]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"停止任务" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
-            [[AwemeLikeCleaner sharedCleaner] stopTask];
-        }]];
-        [[self topViewController] presentViewController:alert animated:YES completion:nil];
-        return;
-    }
-
-    UIViewController *topVC = [self topViewController];
-    id dataController = [self findDataControllerFromVC:topVC];
-    
-    if (!dataController) {
-        NSMutableString *debugInfo = [NSMutableString stringWithFormat:@"顶层 VC: %@\n子控制器列表:\n", NSStringFromClass([topVC class])];
-        for (UIViewController *child in topVC.childViewControllers) {
-            [debugInfo appendFormat:@"- %@\n", NSStringFromClass([child class])];
+    @try {
+        if ([AwemeLikeCleaner sharedCleaner].isRunning) {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"提示" message:@"任务正在后台清理中，要停止吗？" preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"继续清理" style:UIAlertActionStyleCancel handler:nil]];
+            [alert addAction:[UIAlertAction actionWithTitle:@"停止任务" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
+                [[AwemeLikeCleaner sharedCleaner] stopTask];
+            }]];
+            [[self topViewController] presentViewController:alert animated:YES completion:nil];
+            return;
         }
-        
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"未寻找到数据源"
-                                                                       message:[NSString stringWithFormat:@"请确保已切换到【我 - 喜欢】页面。\n\n诊断信息:\n%@", debugInfo]
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleCancel handler:nil]];
-        [topVC presentViewController:alert animated:YES completion:nil];
-        return;
-    }
 
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"确认清空" 
-                                                                   message:@"成功定位到喜欢的视频数据源，要开始自动批量取消点赞吗？"
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"开始清空" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
-        [[AwemeLikeCleaner sharedCleaner] startBatchClearWithTarget:dataController];
-    }]];
-    
-    [topVC presentViewController:alert animated:YES completion:nil];
+        UIViewController *topVC = [self topViewController];
+        id dataController = [self findDataControllerFromVC:topVC];
+        
+        if (!dataController) {
+            NSMutableString *debugInfo = [NSMutableString stringWithFormat:@"顶层 VC: %@\n子控制器列表:\n", NSStringFromClass([topVC class])];
+            for (UIViewController *child in topVC.childViewControllers) {
+                [debugInfo appendFormat:@"- %@\n", NSStringFromClass([child class])];
+            }
+            
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"未寻找到数据源"
+                                                                           message:[NSString stringWithFormat:@"请确保已切换到【我 - 喜欢】页面。\n\n诊断信息:\n%@", debugInfo]
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleCancel handler:nil]];
+            [topVC presentViewController:alert animated:YES completion:nil];
+            return;
+        }
+
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"确认清空" 
+                                                                       message:@"成功定位到喜欢的视频数据源，要开始自动批量取消点赞吗？"
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"开始清空" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
+            [[AwemeLikeCleaner sharedCleaner] startBatchClearWithTarget:dataController];
+        }]];
+        
+        [topVC presentViewController:alert animated:YES completion:nil];
+    } @catch (NSException *exception) {
+        NSLog(@"[AwemeClear] 点击发生崩溃捕获: %@", exception);
+    }
 }
 
 - (void)handlePan:(UIPanGestureRecognizer *)pan {
@@ -202,7 +215,7 @@
 @end
 
 // ================================================================
-// 3. 点赞清理执行逻辑
+// 3. 安全点赞清理器
 // ================================================================
 @implementation AwemeLikeCleaner
 
@@ -224,99 +237,109 @@
     self.isRunning = YES;
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        NSUInteger totalDeletedCount = 0;
-        BOOL hasMoreData = YES;
-        
-        while (self.isRunning && hasMoreData) {
-            SEL loadMoreSel = NSSelectorFromString(@"loadMoreWithFilteredCompletion:");
-            if ([dataController respondsToSelector:loadMoreSel]) {
-                dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-                void (^loadBlock)(id, NSError *) = ^(id response, NSError *error) {
-                    dispatch_semaphore_signal(sema);
-                };
+        @try {
+            NSUInteger totalDeletedCount = 0;
+            BOOL hasMoreData = YES;
+            
+            while (self.isRunning && hasMoreData) {
+                SEL loadMoreSel = NSSelectorFromString(@"loadMoreWithFilteredCompletion:");
+                if ([dataController respondsToSelector:loadMoreSel]) {
+                    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+                    void (^loadBlock)(id, NSError *) = ^(id response, NSError *error) {
+                        dispatch_semaphore_signal(sema);
+                    };
+                    
+                    NSMethodSignature *sig = [dataController methodSignatureForSelector:loadMoreSel];
+                    if (sig && sig.numberOfArguments > 2) {
+                        NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:sig];
+                        [invocation setTarget:dataController];
+                        [invocation setSelector:loadMoreSel];
+                        [invocation setArgument:&loadBlock atIndex:2];
+                        [invocation invoke];
+                        
+                        dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)));
+                    }
+                }
                 
-                NSMethodSignature *sig = [dataController methodSignatureForSelector:loadMoreSel];
-                NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:sig];
-                [invocation setTarget:dataController];
-                [invocation setSelector:loadMoreSel];
-                [invocation setArgument:&loadBlock atIndex:2];
-                [invocation invoke];
+                NSArray *currentItems = nil;
+                SEL dataSourceSel = NSSelectorFromString(@"dataSource");
+                SEL awemeListSel = NSSelectorFromString(@"awemeList");
                 
-                dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)));
-            }
-            
-            NSArray *currentItems = nil;
-            SEL dataSourceSel = NSSelectorFromString(@"dataSource");
-            SEL awemeListSel = NSSelectorFromString(@"awemeList");
-            
-            if ([dataController respondsToSelector:dataSourceSel]) {
-                #pragma clang diagnostic push
-                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                currentItems = [dataController performSelector:dataSourceSel];
-                #pragma clang diagnostic pop
-            } else if ([dataController respondsToSelector:awemeListSel]) {
-                #pragma clang diagnostic push
-                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                currentItems = [dataController performSelector:awemeListSel];
-                #pragma clang diagnostic pop
-            }
-            
-            if (!currentItems || currentItems.count == 0) {
-                hasMoreData = NO;
-                break;
-            }
-            
-            NSUInteger batchProcessed = 0;
-            for (id item in [currentItems copy]) {
-                if (!self.isRunning) break;
-                
-                NSString *videoID = nil;
-                if ([item isKindOfClass:[NSString class]]) {
-                    videoID = item;
-                } else if ([item respondsToSelector:NSSelectorFromString(@"awemeID")]) {
+                if ([dataController respondsToSelector:dataSourceSel]) {
                     #pragma clang diagnostic push
                     #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                    videoID = [item performSelector:NSSelectorFromString(@"awemeID")];
+                    currentItems = [dataController performSelector:dataSourceSel];
                     #pragma clang diagnostic pop
-                } else if ([item respondsToSelector:NSSelectorFromString(@"itemID")]) {
+                } else if ([dataController respondsToSelector:awemeListSel]) {
                     #pragma clang diagnostic push
                     #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                    videoID = [item performSelector:NSSelectorFromString(@"itemID")];
+                    currentItems = [dataController performSelector:awemeListSel];
                     #pragma clang diagnostic pop
                 }
                 
-                if (!videoID || videoID.length == 0) continue;
+                if (!currentItems || ![currentItems isKindOfClass:[NSArray class]] || currentItems.count == 0) {
+                    hasMoreData = NO;
+                    break;
+                }
                 
-                SEL changeStatusSel = NSSelectorFromString(@"changeVideoDiggedStatus:videoID:");
-                if ([dataController respondsToSelector:changeStatusSel]) {
-                    NSMethodSignature *sig = [dataController methodSignatureForSelector:changeStatusSel];
-                    NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:sig];
-                    [invocation setTarget:dataController];
-                    [invocation setSelector:changeStatusSel];
+                NSUInteger batchProcessed = 0;
+                NSArray *itemsCopy = [currentItems copy];
+                
+                for (id item in itemsCopy) {
+                    if (!self.isRunning) break;
                     
-                    NSInteger status = 0;
-                    [invocation setArgument:&status atIndex:2];
-                    [invocation setArgument:&videoID atIndex:3];
-                    [invocation invoke];
-                    
-                    SEL removeSel = NSSelectorFromString(@"removeWithItemID:");
-                    if ([dataController respondsToSelector:removeSel]) {
+                    NSString *videoID = nil;
+                    if ([item isKindOfClass:[NSString class]]) {
+                        videoID = item;
+                    } else if ([item respondsToSelector:NSSelectorFromString(@"awemeID")]) {
                         #pragma clang diagnostic push
                         #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                        [dataController performSelector:removeSel withObject:videoID];
+                        videoID = [item performSelector:NSSelectorFromString(@"awemeID")];
+                        #pragma clang diagnostic pop
+                    } else if ([item respondsToSelector:NSSelectorFromString(@"itemID")]) {
+                        #pragma clang diagnostic push
+                        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                        videoID = [item performSelector:NSSelectorFromString(@"itemID")];
                         #pragma clang diagnostic pop
                     }
                     
-                    totalDeletedCount++;
-                    batchProcessed++;
-                    [NSThread sleepForTimeInterval:0.6];
+                    if (!videoID || ![videoID isKindOfClass:[NSString class]] || videoID.length == 0) continue;
+                    
+                    SEL changeStatusSel = NSSelectorFromString(@"changeVideoDiggedStatus:videoID:");
+                    if ([dataController respondsToSelector:changeStatusSel]) {
+                        NSMethodSignature *sig = [dataController methodSignatureForSelector:changeStatusSel];
+                        if (sig && sig.numberOfArguments >= 4) {
+                            NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:sig];
+                            [invocation setTarget:dataController];
+                            [invocation setSelector:changeStatusSel];
+                            
+                            NSInteger status = 0;
+                            [invocation setArgument:&status atIndex:2];
+                            [invocation setArgument:&videoID atIndex:3];
+                            [invocation invoke];
+                            
+                            SEL removeSel = NSSelectorFromString(@"removeWithItemID:");
+                            if ([dataController respondsToSelector:removeSel]) {
+                                #pragma clang diagnostic push
+                                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                                [dataController performSelector:removeSel withObject:videoID];
+                                #pragma clang diagnostic pop
+                            }
+                            
+                            totalDeletedCount++;
+                            batchProcessed++;
+                            [NSThread sleepForTimeInterval:0.6];
+                        }
+                    }
                 }
+                
+                if (batchProcessed == 0) hasMoreData = NO;
             }
-            
-            if (batchProcessed == 0) hasMoreData = NO;
+        } @catch (NSException *exception) {
+            NSLog(@"[AwemeClear] 任务线程异常: %@", exception);
+        } @finally {
+            self.isRunning = NO;
         }
-        
-        self.isRunning = NO;
     });
 }
 
