@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import <objc/runtime.h>
 
 @interface AwemeFloatingManager : NSObject
@@ -17,6 +18,25 @@
         instance = [[AwemeFloatingManager alloc] init];
     });
     return instance;
+}
+
+// 提取通用的获取 KeyWindow 逻辑（兼容 iOS 13+，无 Warning）
+- (UIWindow *)fetchActiveKeyWindow {
+    if (@available(iOS 13.0, *)) {
+        for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
+                for (UIWindow *window in scene.windows) {
+                    if (window.isKeyWindow) {
+                        return window;
+                    }
+                }
+            }
+        }
+    }
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    return [UIApplication sharedApplication].keyWindow;
+    #pragma clang diagnostic pop
 }
 
 - (void)showFloatingButton {
@@ -43,34 +63,19 @@
         
         self->_floatingButton = button;
 
-        // 3. 寻找当前主 Window 并挂载
-        UIWindow *keyWindow = nil;
-        if (@available(iOS 13.0, *)) {
-            for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
-                    for (UIWindow *window in scene.windows) {
-                        if (window.isKeyWindow) {
-                            keyWindow = window;
-                            break;
-                        }
-                    }
-                }
-            }
+        // 3. 获取 keyWindow 并挂载
+        UIWindow *keyWindow = [self fetchActiveKeyWindow];
+        if (keyWindow) {
+            [keyWindow addSubview:button];
+            [keyWindow bringSubviewToFront:button];
+            NSLog(@"[AwemeClearLikes] Global floating button added successfully!");
         }
-        
-        if (!keyWindow) {
-            keyWindow = [UIApplication sharedApplication].keyWindow;
-        }
-
-        [keyWindow addSubview:button];
-        [keyWindow bringSubviewToFront:button];
-        NSLog(@"[AwemeClearLikes] Global floating button added to keyWindow successfully!");
     });
 }
 
 // 点击按钮响应
 - (void)buttonClicked {
-    UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
+    UIWindow *keyWindow = [self fetchActiveKeyWindow];
     UIViewController *topVC = keyWindow.rootViewController;
     while (topVC.presentedViewController) {
         topVC = topVC.presentedViewController;
@@ -87,17 +92,16 @@
     [topVC presentViewController:alert animated:YES completion:nil];
 }
 
-// 拖拽手势响应（贴边限制防走出屏幕）
+// 拖拽手势响应
 - (void)handlePan:(UIPanGestureRecognizer *)pan {
     UIView *button = pan.view;
     CGPoint translation = [pan translationInView:button.superview];
     
     CGPoint newCenter = CGPointMake(button.center.x + translation.x, button.center.y + translation.y);
     
-    // 边界限制
     CGFloat minX = button.frame.size.width / 2.0;
     CGFloat maxX = button.superview.bounds.size.width - minX;
-    CGFloat minY = button.frame.size.height / 2.0 + 40; // 避开顶部状态栏
+    CGFloat minY = button.frame.size.height / 2.0 + 40;
     CGFloat maxY = button.superview.bounds.size.height - minY;
     
     newCenter.x = MIN(MAX(newCenter.x, minX), maxX);
@@ -109,13 +113,11 @@
 
 @end
 
-// 动态库初始化时调用
 @implementation NSObject (AwemeClearLikesLoader)
 
 + (void)load {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // 监听 App 启动完成通知，确保 Window 初始化后再挂载
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
                                                           object:nil
                                                            queue:[NSOperationQueue mainQueue]
@@ -123,7 +125,6 @@
             [[AwemeFloatingManager sharedManager] showFloatingButton];
         }];
         
-        // 容错机制：若已经启动完则延迟 2 秒直接展示
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [[AwemeFloatingManager sharedManager] showFloatingButton];
         });
