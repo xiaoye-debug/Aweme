@@ -19,7 +19,7 @@ jobs:
           -arch arm64 \
           -miphoneos-version-min=14.0 \
           -fobjc-arc \
-          -framework UIKit -framework Foundation \
+          -framework UIKit -framework Foundation -framework CoreGraphics \
           AwemeClearLikes.m \
           -o AwemeClearLikes.dylib
 
