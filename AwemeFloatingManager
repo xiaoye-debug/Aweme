@@ -1,0 +1,43 @@
+- (id)findDataControllerFromVC:(UIViewController *)vc {
+    if (!vc) return nil;
+    
+    // 1. 先查当前 VC 的属性
+    id targetObj = [self searchDataControllerInObject:vc];
+    if (targetObj) return targetObj;
+    
+    // 2. 如果没找到，递归查找 childViewControllers (抖音个人主页 Tab 常用的子容器结构)
+    for (UIViewController *childVC in vc.childViewControllers) {
+        id childTarget = [self findDataControllerFromVC:childVC];
+        if (childTarget) return childTarget;
+    }
+    
+    return nil;
+}
+
+- (id)searchDataControllerInObject:(id)obj {
+    if (!obj) return nil;
+    
+    unsigned int count = 0;
+    objc_property_t *properties = class_copyPropertyList([obj class], &count);
+    
+    for (unsigned int i = 0; i < count; i++) {
+        const char *propName = property_getName(properties[i]);
+        NSString *name = [NSString stringWithUTF8String:propName];
+        
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        id targetObj = [obj performSelector:NSSelectorFromString(name)];
+        #pragma clang diagnostic pop
+        
+        if (targetObj) {
+            // 只要对象响应 changeVideoDiggedStatus:videoID: 或 loadMoreWithFilteredCompletion: 就认定为数据源
+            if ([targetObj respondsToSelector:NSSelectorFromString(@"changeVideoDiggedStatus:videoID:")] ||
+                [targetObj respondsToSelector:NSSelectorFromString(@"loadMoreWithFilteredCompletion:")]) {
+                free(properties);
+                return targetObj;
+            }
+        }
+    }
+    free(properties);
+    return nil;
+}
