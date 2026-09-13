@@ -4,7 +4,7 @@
 @class AwemeLikeCleaner;
 
 // ================================================================
-// 1. 悬浮窗管理器 (AwemeFloatingManager)
+// 1. 悬浮窗管理器
 // ================================================================
 @interface AwemeFloatingManager : NSObject
 + (instancetype)sharedManager;
@@ -12,7 +12,7 @@
 @end
 
 // ================================================================
-// 2. 点赞清理器 (AwemeLikeCleaner)
+// 2. 点赞清理器
 // ================================================================
 @interface AwemeLikeCleaner : NSObject
 @property (nonatomic, assign) BOOL isRunning;
@@ -39,9 +39,7 @@
         for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
             if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
                 for (UIWindow *window in scene.windows) {
-                    if (window.isKeyWindow) {
-                        return window;
-                    }
+                    if (window.isKeyWindow) return window;
                 }
             }
         }
@@ -67,7 +65,6 @@
 - (void)showFloatingButton {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self->_floatingButton) {
-            // 如果已存在，直接带到最外层
             [self->_floatingButton.superview bringSubviewToFront:self->_floatingButton];
             return;
         }
@@ -94,30 +91,50 @@
         if (keyWindow) {
             [keyWindow addSubview:button];
             [keyWindow bringSubviewToFront:button];
-            NSLog(@"[AwemeClear] 悬浮按钮挂载成功！");
         }
     });
 }
 
-// 自动寻找当前 View Controller 拥有的 DataController
+// 深度查找数据源
 - (id)findDataControllerFromVC:(UIViewController *)vc {
     if (!vc) return nil;
     
+    // 1. 检查当前 VC 自身
+    id targetObj = [self searchDataControllerInObject:vc];
+    if (targetObj) return targetObj;
+    
+    // 2. 深度遍历 childViewControllers 容器
+    for (UIViewController *child in vc.childViewControllers) {
+        id childTarget = [self findDataControllerFromVC:child];
+        if (childTarget) return childTarget;
+    }
+    
+    return nil;
+}
+
+- (id)searchDataControllerInObject:(id)obj {
+    if (!obj) return nil;
+    
     unsigned int count = 0;
-    objc_property_t *properties = class_copyPropertyList([vc class], &count);
+    objc_property_t *properties = class_copyPropertyList([obj class], &count);
     
     for (unsigned int i = 0; i < count; i++) {
         const char *propName = property_getName(properties[i]);
         NSString *name = [NSString stringWithUTF8String:propName];
         
-        if ([name containsString:@"DataController"] || [name containsString:@"dataController"]) {
+        if ([name containsString:@"Data"] || [name containsString:@"Controller"] || 
+            [name containsString:@"Model"] || [name containsString:@"List"] || [name containsString:@"Provider"]) {
             #pragma clang diagnostic push
             #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            id targetObj = [vc performSelector:NSSelectorFromString(name)];
+            id propObj = [obj performSelector:NSSelectorFromString(name)];
             #pragma clang diagnostic pop
-            if (targetObj && [targetObj respondsToSelector:NSSelectorFromString(@"changeVideoDiggedStatus:videoID:")]) {
-                free(properties);
-                return targetObj;
+            
+            if (propObj) {
+                if ([propObj respondsToSelector:NSSelectorFromString(@"changeVideoDiggedStatus:videoID:")] ||
+                    [propObj respondsToSelector:NSSelectorFromString(@"loadMoreWithFilteredCompletion:")]) {
+                    free(properties);
+                    return propObj;
+                }
             }
         }
     }
@@ -127,8 +144,8 @@
 
 - (void)buttonClicked {
     if ([AwemeLikeCleaner sharedCleaner].isRunning) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"提示" message:@"任务执行中，要停止吗？" preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"继续执行" style:UIAlertActionStyleCancel handler:nil]];
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"提示" message:@"任务正在后台清理中，要停止吗？" preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"继续清理" style:UIAlertActionStyleCancel handler:nil]];
         [alert addAction:[UIAlertAction actionWithTitle:@"停止任务" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
             [[AwemeLikeCleaner sharedCleaner] stopTask];
         }]];
@@ -139,17 +156,28 @@
     UIViewController *topVC = [self topViewController];
     id dataController = [self findDataControllerFromVC:topVC];
     
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"清空点赞" 
-                                                                   message:dataController ? @"已定位点赞数据源，确定要开始批量取消点赞吗？" : @"未在当前页面自动寻找到数据源，请切到【我 - 喜欢】列表页面后再试。"
+    if (!dataController) {
+        NSMutableString *debugInfo = [NSMutableString stringWithFormat:@"顶层 VC: %@\n子控制器列表:\n", NSStringFromClass([topVC class])];
+        for (UIViewController *child in topVC.childViewControllers) {
+            [debugInfo appendFormat:@"- %@\n", NSStringFromClass([child class])];
+        }
+        
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"未寻找到数据源"
+                                                                       message:[NSString stringWithFormat:@"请确保已切换到【我 - 喜欢】页面。\n\n诊断信息:\n%@", debugInfo]
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleCancel handler:nil]];
+        [topVC presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"确认清空" 
+                                                                   message:@"成功定位到喜欢的视频数据源，要开始自动批量取消点赞吗？"
                                                             preferredStyle:UIAlertControllerStyleAlert];
     
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    
-    if (dataController) {
-        [alert addAction:[UIAlertAction actionWithTitle:@"开始清空" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
-            [[AwemeLikeCleaner sharedCleaner] startBatchClearWithTarget:dataController];
-        }]];
-    }
+    [alert addAction:[UIAlertAction actionWithTitle:@"开始清空" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
+        [[AwemeLikeCleaner sharedCleaner] startBatchClearWithTarget:dataController];
+    }]];
     
     [topVC presentViewController:alert animated:YES completion:nil];
 }
@@ -157,7 +185,6 @@
 - (void)handlePan:(UIPanGestureRecognizer *)pan {
     UIView *button = pan.view;
     CGPoint translation = [pan translationInView:button.superview];
-    
     CGPoint newCenter = CGPointMake(button.center.x + translation.x, button.center.y + translation.y);
     
     CGFloat minX = button.frame.size.width / 2.0;
@@ -175,7 +202,7 @@
 @end
 
 // ================================================================
-// 点赞清理器实现
+// 3. 点赞清理执行逻辑
 // ================================================================
 @implementation AwemeLikeCleaner
 
@@ -204,10 +231,7 @@
             SEL loadMoreSel = NSSelectorFromString(@"loadMoreWithFilteredCompletion:");
             if ([dataController respondsToSelector:loadMoreSel]) {
                 dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-                __block NSError *loadError = nil;
-                
                 void (^loadBlock)(id, NSError *) = ^(id response, NSError *error) {
-                    loadError = error;
                     dispatch_semaphore_signal(sema);
                 };
                 
@@ -293,21 +317,19 @@
         }
         
         self.isRunning = NO;
-        NSLog(@"[AwemeClear] 任务完成，共清空 %lu 个作品", (unsigned long)totalDeletedCount);
     });
 }
 
 @end
 
 // ================================================================
-// 动态库初始化加载器（多阶段延迟挂载，确保 100% 出现）
+// 4. 动态库入口挂载
 // ================================================================
 @implementation NSObject (AwemeClearLikesLoader)
 
 + (void)load {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // 监听 App 激活通知
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                           object:nil
                                                            queue:[NSOperationQueue mainQueue]
@@ -315,11 +337,7 @@
             [[AwemeFloatingManager sharedManager] showFloatingButton];
         }];
         
-        // 延迟挂载双保险
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [[AwemeFloatingManager sharedManager] showFloatingButton];
-        });
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [[AwemeFloatingManager sharedManager] showFloatingButton];
         });
     });
